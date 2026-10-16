@@ -14,7 +14,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | # | Gap | Kind | Blocks beta | Estimate |
 |---|---|---|---|---|
-| G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 25–50 h (harness built; renders and corpus breadth remain) |
+| G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 20–40 h (harness and first scripted run done; the interchange and render fixes behind the nine known failures, and corpus breadth, remain) |
 | G2 | Premiere's `.prproj` cannot be opened | file format | **yes** | 60–120 h |
 | G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 30–50 h |
 | G4 | Crashes at start-up, and no test CI on pull requests | stability | yes | 40–80 h |
@@ -46,7 +46,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   `plan/premiere/fidelity/` with PSNR and CIEDE2000 per case for pictures and aligned sample-level
   SNR for sound; a Markdown report, JSON results, `--min`, and a generated `PREMIERE.md` with the
   per-case steps for the Premiere side, and `crates/fidelity/premiere/render.py`, which performs
-  those steps through premiere-cli on the maintainer's machine (import, settings check, the effect
+  those steps through its own bridge panel on any machine with Premiere Pro (import, settings check, the effect
   cases' values by Effect Controls name, PNG / WAV export through Media Encoder). First full run
   2026-10-16 against Premiere Pro 26.5.2: **11 / 20 pass**. Baseline cut 47.8 dB PSNR, mean
   ΔE₀₀ 0.14; Motion, scale / opacity ramps, Crop, Black & White, Invert and both speed cases pass
@@ -342,3 +342,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: MP1 (`A_MPEG/L1`) in Matroska imports (#1402) |
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-15 | minor | G1: the fidelity harness exists (`crates/fidelity`, `cargo xtask fidelity`: original media corpus, 20 cases as FCP7 XML / OTIO, PSNR / ΔE₀₀ and aligned audio SNR scoring, `PREMIERE.md` protocol); remaining: the Premiere renders and corpus breadth, 25–50 h |
+| 2026-10-16 | minor | G1: first scripted Premiere run (Premiere Pro 26.5.2, bridge panel + `render.py`): 11 of 11 unmarked cases pass, 9 cases marked `known_failure` with filed reasons (stereo clip items, `Dip to Color Dissolve`, Premiere's effect ids, dissolve curve, blur kernel, Brightness & Contrast curves); remaining 20–40 h |
