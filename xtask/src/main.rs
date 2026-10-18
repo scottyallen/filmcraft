@@ -495,9 +495,14 @@ fn fidelity(root: &std::path::Path, args: &[String]) -> Result<(), String> {
     let mut cmd = Command::new(env!("CARGO"));
     cmd.args(["run", "--release", "-q", "-p", "filmcraft-fidelity", "--bin", "fidelity", "--"]);
     if !args.iter().any(|a| a == "--out") {
-        // absolute: the XML the maintainer imports into Premiere must name the media by full path
-        let target = target_dir();
-        let target = if target.is_absolute() { target } else { std::env::current_dir().map_err(|e| e.to_string())?.join(target) };
+        // absolute: the XML the maintainer imports into Premiere must name the media by full path.
+        // Cargo's default target directory is the workspace root's, wherever the task is run from;
+        // a relative CARGO_TARGET_DIR is relative to the working directory, as for cargo itself
+        let target = match std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from) {
+            Some(t) if t.is_absolute() => t,
+            Some(t) => std::env::current_dir().map_err(|e| e.to_string())?.join(t),
+            None => root.join("target"),
+        };
         cmd.arg("--out").arg(target.join("fidelity"));
     }
     if !args.iter().any(|a| a == "--reference") {
