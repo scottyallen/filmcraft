@@ -72,6 +72,12 @@ class Skipped(Failure):
     """A case not rendered for want of a preset; counts against the exit status like a failure."""
 
 
+class HostBlocked(Exception):
+    """A command timed out inside Premiere's scripting host (a dialog, most likely). The script is
+    still running there and every later one queues behind it, so the run stops; not a Failure, so
+    the per-case handler does not swallow it."""
+
+
 # ---------------------------------------------------------------------------------------------
 # The bridge
 
@@ -134,7 +140,8 @@ class Bridge:
 
     def run(self, script, timeout=COMMAND_TIMEOUT_S):
         """Run ExtendScript in Premiere; the script `return`s a JSON string, which comes back parsed.
-        A `{success: false, error}` answer, a thrown error or a timeout is a Failure."""
+        A `{success: false, error}` answer or a thrown error is a Failure; a timeout inside the host
+        is HostBlocked and ends the run."""
         if not self.alive():
             raise Failure("the bridge panel is not answering (Window > Extensions > FilmCraft Fidelity, with a project open)")
         cid = f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}"
@@ -160,6 +167,8 @@ class Bridge:
             answer = json.load(handle)
         os.remove(out)
         if not answer.get("ok"):
+            if answer.get("timeout"):
+                raise HostBlocked(str(answer.get("error", "the command timed out in Premiere")))
             raise Failure(str(answer.get("error", "unknown bridge error")))
         raw = answer.get("result")
         try:
@@ -620,6 +629,9 @@ def main(argv):
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv[1:]))
+    except HostBlocked as error:
+        print(f"render.py: {error}; the run stops here (dismiss the dialog in Premiere, then run again)", file=sys.stderr)
+        sys.exit(1)
     except Failure as error:
         print(f"render.py: {error}", file=sys.stderr)
         sys.exit(1)

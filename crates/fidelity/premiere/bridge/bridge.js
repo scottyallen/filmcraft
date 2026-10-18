@@ -70,7 +70,9 @@
       done = true;
       busy = false;
       show('status', 'idle (last command timed out)');
-      respond(id, { ok: false, error: 'no answer from Premiere in ' + timeoutMs + ' ms: a dialog may be blocking it' });
+      // the script is still running in the host (a dialog, most likely); every later evalScript
+      // queues behind it, so the driver must stop the run rather than go on to the next case
+      respond(id, { ok: false, timeout: true, error: 'no answer from Premiere in ' + timeoutMs + ' ms: a dialog may be blocking it' });
     }, timeoutMs);
     var wrapped = '(function () { try { ' + String(request.script || '') + '\n } catch (e) { return "__filmcraft_error__ " + e.toString(); } })()';
     evalScript(wrapped, function (result) {
