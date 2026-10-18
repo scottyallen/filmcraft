@@ -266,7 +266,7 @@ impl FxOp {
             return None;
         }
         Some(match e.effect.as_str() {
-            "brightness_contrast" => FxOp::BrightnessContrast { br: f(e, "brightness", cx) / 100.0 * 0.4, co: 1.0 + f(e, "contrast", cx) / 100.0 },
+            "brightness_contrast" => Self::brightness_contrast(f(e, "brightness", cx), f(e, "contrast", cx)),
             "proc_amp" => FxOp::ProcAmp {
                 br: f(e, "brightness", cx) / 100.0 * 0.4,
                 co: f(e, "contrast", cx) / 100.0,
@@ -577,6 +577,20 @@ impl FxOp {
             }
             _ => return None,
         })
+    }
+
+    /// Brightness & Contrast as Premiere renders it, measured against Premiere Pro 26.5.2's render
+    /// of the `brightness_contrast` fidelity case (Brightness 20, Contrast 30) over its own render
+    /// of the same footage: per channel and linear in 8-bit sRGB values, Brightness adds that many
+    /// 8-bit steps first, then Contrast scales around mid-grey by 1 / (1 − Contrast / 100)
+    /// (slope 1.4286 and offset −26.08 fitted; this gives 1.4286 and −26.07). Contrast 100 is a
+    /// threshold (one 8-bit step spans the range). Negative Contrast is not measured yet and
+    /// flattens linearly, 1 + Contrast / 100, to grey at −100; since Brightness comes first, it
+    /// flattens Brightness's offset too (no Brightness at all at −100).
+    fn brightness_contrast(brightness: f32, contrast: f32) -> FxOp {
+        let co = if contrast > 0.0 { 1.0 / (1.0 - contrast / 100.0).max(1.0 / 255.0) } else { (1.0 + contrast / 100.0).max(0.0) };
+        // (v + B − ½)·k + ½ = (v − ½)·k + ½ + B·k, the form `apply` and the shader share.
+        FxOp::BrightnessContrast { br: brightness / 255.0 * co, co }
     }
 
     fn crop_rect(w: usize, h: usize, l: f32, t: f32, r: f32, b: f32, feather: f32) -> FxOp {
@@ -1104,6 +1118,47 @@ mod tests {
     use super::*;
     use filmcraft_project::{ParamValue, find_effect};
     use filmcraft_time::Tick;
+
+    /// Premiere Pro 26.5.2's Brightness 20 / Contrast 30 on 8-bit sRGB grey: every pair is the
+    /// median of what its render made of that input value, on all three channels, in the
+    /// `brightness_contrast` fidelity case (the old curve, (v − ½)·1.3 + ½ + 0.08, gave 128 → 149).
+    #[test]
+    fn brightness_contrast_matches_premieres_curve() {
+        let cx = FxCtx {
+            t: Tick::ZERO,
+            px_scale: 1.0,
+            seconds: 0.0,
+            timecode: "",
+            clip_name: "",
+            project: None,
+            env: None,
+            frame_rate: 24.0,
+            working: filmcraft_color::WorkingSpace::Rec709,
+        };
+        let mut e = find_effect("brightness_contrast").unwrap().instance();
+        for (key, value) in [("brightness", 20.0), ("contrast", 30.0)] {
+            e.params.get_mut(key).unwrap().value = ParamValue::Float(value);
+        }
+        let pairs = [(16u8, 0u8), (32, 20), (40, 31), (64, 65), (96, 111), (128, 157), (160, 203), (180, 231), (200, 255)];
+        let mut img = Image {
+            w: pairs.len(),
+            h: 1,
+            px: pairs
+                .iter()
+                .flat_map(|(v, _)| {
+                    let c = filmcraft_color::srgb_to_linear(f32::from(*v) / 255.0);
+                    [c, c, c, 1.0]
+                })
+                .collect(),
+        };
+        FxOp::eval(&e, &cx, pairs.len(), 1).unwrap().apply(&mut img);
+        for (pixel, (v, want)) in img.px.as_chunks::<4>().0.iter().zip(pairs) {
+            for c in &pixel[..3] {
+                let got = (filmcraft_color::linear_to_srgb(*c) * 255.0).round();
+                assert_eq!(got, f32::from(want), "input {v}");
+            }
+        }
+    }
 
     #[test]
     fn extract_zero_softness_has_no_fractional_edge() {

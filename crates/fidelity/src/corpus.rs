@@ -791,7 +791,7 @@ pub const CASES: &[CaseDef] = &[
         xml_complete: false,
         premiere_steps: &["Apply Video Effects ▸ Color Correction ▸ Brightness & Contrast to the clip on V1.", "Brightness 20 · Contrast 30."],
         premiere_effects: &[PremiereEffect { name: "Brightness & Contrast", params: &[("Brightness", num(20.0)), ("Contrast", num(30.0))] }],
-        known_failure: Some("34.4 dB: the Brightness and Contrast curves differ (render)"),
+        known_failure: None,
         tolerance: Tolerance::VIDEO,
         build: brightness_contrast,
     },
