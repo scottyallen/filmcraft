@@ -740,7 +740,7 @@ pub const CASES: &[CaseDef] = &[
         xml_complete: true,
         premiere_steps: NONE,
         premiere_effects: NO_EFFECTS,
-        known_failure: Some("28 dB: Premiere blends the dissolve in gamma-encoded space, our mid-dissolve is brighter (render)"),
+        known_failure: None,
         tolerance: Tolerance::VIDEO,
         build: cross_dissolve,
     },

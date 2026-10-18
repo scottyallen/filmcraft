@@ -248,6 +248,23 @@ fn modern_and_legacy_ids_are_distinct_renders() {
     assert!(mean_abs(&m, &want) < 1e-6);
 }
 
+#[test]
+fn cross_dissolve_mixes_encoded_values_on_the_ease() {
+    // Premiere's Cross Dissolve (fidelity case `cross_dissolve`, docs/gaps.md G1): the weight of B
+    // at p = 0.25 is 3p² − 2p³ = 0.15625, applied to sRGB-encoded values. Linear grey 0.8 into
+    // 0.05 gives 0.60967 here; a linear-light mix at p would give 0.6125.
+    let e = filmcraft_project::find_effect("cross_dissolve").unwrap().instance();
+    let grey = |v: f32| Image::filled(4, 4, [v, v, v, 1.0]);
+    let quarter = apply(&e, &grey(0.8), &grey(0.05), 0.25).get(1, 1);
+    assert!(quarter[..3].iter().all(|c| (c - 0.609_668).abs() < 1e-5) && quarter[3] == 1.0, "{quarter:?}");
+    // white into black at the midpoint: encoded 0.5, which is linear 0.21404 (not 0.5)
+    let mid = apply(&e, &grey(1.0), &grey(0.0), 0.5).get(2, 2);
+    assert!(mid[..3].iter().all(|c| (c - 0.214_041).abs() < 1e-5), "{mid:?}");
+    // from nothing (a transparent side) it fades the other side's opacity on the same ease
+    let fade = apply(&e, &Image::new(4, 4), &grey(0.5), 0.25).get(0, 0);
+    assert!((fade[3] - 0.156_25).abs() < 1e-6 && (fade[0] - 0.5 * 0.156_25).abs() < 1e-6, "{fade:?}");
+}
+
 /// A jump cut (256×144): a static background with a 64×72 subject whose left edge is at `x0`;
 /// flat colours, or a smooth texture on both (the subject's own texture moves with it).
 fn jump_cut_frame(x0: f32, textured: bool) -> Image {
@@ -282,7 +299,8 @@ fn morph_cut_moves_the_subject_instead_of_double_exposing() {
         assert!(m < 0.12, "x={x}: morph off by {m} (dissolve {d})");
     }
     for x in [98usize, 170] {
-        assert!(column_err(&dissolve, x) > 0.3, "x={x}: the dissolve ghosts here");
+        // a half-bright copy: 0.57 against the 0.3 background (the dissolve mixes encoded values)
+        assert!(column_err(&dissolve, x) > 0.2, "x={x}: the dissolve ghosts here");
     }
     let (e_morph, e_dissolve) = (mean_abs(&morph, &want), mean_abs(&dissolve, &want));
     assert!(e_morph * 10.0 < e_dissolve, "morph {e_morph} vs dissolve {e_dissolve}");

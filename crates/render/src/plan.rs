@@ -162,8 +162,14 @@ fn cpu_frame(img: crate::Image) -> Arc<VideoFrame> {
     Arc::new(VideoFrame::rgba_f32(img.w as u32, img.h as u32, img.px))
 }
 
+/// Transitions drawn as layer opacities over what is below.
 fn simple_transition(id: &str) -> bool {
-    matches!(id, "cross_dissolve" | "dip_to_black" | "dip_to_white")
+    matches!(id, "dip_to_black" | "dip_to_white")
+}
+
+/// Transitions the plan carries as a [`PlanStep::Transition`] of its two sides.
+fn step_transition(id: &str) -> bool {
+    matches!(id, "push" | "cross_dissolve")
 }
 
 /// The standard effects of a media clip if the GPU can draw it (any blend mode, no opacity masks,
@@ -237,7 +243,7 @@ pub(crate) fn layered_at(project: &Project, seq: &Sequence, t: Tick) -> bool {
             continue;
         }
         if let Some(trn) = tr.transitions.iter().find(|x| x.range().contains(t)) {
-            if !simple_transition(&trn.effect.effect) && trn.effect.effect != "push" {
+            if !simple_transition(&trn.effect.effect) && !step_transition(&trn.effect.effect) {
                 return false;
             }
             if [trn.from, trn.to].into_iter().flatten().filter_map(|c| tr.item(c)).any(adjustment) {
@@ -267,7 +273,9 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
             let a = trn.from.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             let b = trn.to.and_then(|id| tr.item(id)).filter(|i| i.enabled);
             match trn.effect.effect.as_str() {
-                "push" => {
+                // Cross Dissolve mixes in encoded values (`transitions::dissolve::cross_dissolve`),
+                // which no layer opacity can express: both sides render apart and the step mixes them
+                "push" | "cross_dissolve" => {
                     let mut inputs = [Vec::new(), Vec::new()];
                     for (slot, item) in inputs.iter_mut().zip([a, b]) {
                         if let Some(item) = item {
@@ -292,15 +300,7 @@ fn push_tracks(project: &Project, seq: &Sequence, t: Tick, opts: RenderOptions, 
                         push_item(project, seq, it, t, opts, sources, k, Some(Blend::Normal), nest, layers);
                     }
                 }
-                _ => {
-                    // cross dissolve: A at full, B over it at p (premultiplied over == linear mix when A is opaque)
-                    if let Some(it) = a {
-                        push_item(project, seq, it, t, opts, sources, 1.0 - if b.is_none() { p } else { 0.0 }, Some(Blend::Normal), nest, layers);
-                    }
-                    if let Some(it) = b {
-                        push_item(project, seq, it, t, opts, sources, p, Some(Blend::Normal), nest, layers);
-                    }
-                }
+                _ => {}
             }
             continue;
         }
