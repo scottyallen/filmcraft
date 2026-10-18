@@ -224,7 +224,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
         height: h,
         steps: vec![PlanStep::Transition {
             inputs: [vec![layer(0)], vec![layer(1)]],
-            effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+            effect: filmcraft_project::find_effect("film_dissolve").unwrap().instance(),
             progress: 0.37,
             scale: 1.0,
         }],
@@ -235,6 +235,26 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1));
     assert_eq!(c.cpu_transitions, 1);
     assert_eq!(c.gpu_transitions, 4 * 3 * 6);
+
+    // Cross Dissolve runs on the GPU and mixes in encoded values as the CPU does.
+    for progress in [0.25, 0.5, 0.8] {
+        let dissolve = FramePlan::Composite {
+            width: w,
+            height: h,
+            steps: vec![PlanStep::Transition {
+                inputs: [vec![layer(0)], vec![layer(1)]],
+                effect: filmcraft_project::find_effect("cross_dissolve").unwrap().instance(),
+                progress,
+                scale: 1.0,
+            }],
+        };
+        c.composite_prepared(&dissolve, Some(&prepare(&dissolve)));
+        let (_, _, got) = c.read_output().expect("dissolve readback");
+        let expected = execute_cpu(&dissolve).over_black_rgba8();
+        assert!(got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1), "cross dissolve at {progress}");
+    }
+    assert_eq!(c.cpu_transitions, 1);
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 3);
 
     // Reuse both input targets across ordered transitions; preparation advances past intervening layers.
     let transition = |progress| PlanStep::Transition {
@@ -255,7 +275,7 @@ fn gpu_push_matches_cpu_with_alpha_and_surrounding_blends() {
     let cpu = execute_cpu(&stacked).over_black_rgba8();
     // One byte level tolerates half-float resolve rounding.
     assert!(gpu.iter().zip(cpu).all(|(a, b)| a.abs_diff(b) <= 1), "stacked transitions exceed one byte level");
-    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 2);
+    assert_eq!(c.gpu_transitions, 4 * 3 * 6 + 5);
     assert_eq!(c.cpu_transitions, 1);
 }
 

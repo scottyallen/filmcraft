@@ -2,6 +2,8 @@
 //! whose output the golden images pin).
 
 use super::{Tx, add_light, bell, blurred, fbm, hash, luma, mid_mix, mix, paint, scale4, smoothstep};
+use rayon::prelude::*;
+
 use crate::image::Image;
 
 /// Perceptual (≈ gamma 2.2) luma of a premultiplied linear pixel, 0..1.
@@ -9,9 +11,51 @@ pub(crate) fn perceptual_luma(c: [f32; 4]) -> f32 {
     luma(c).clamp(0.0, 1.0).powf(1.0 / 2.2)
 }
 
+/// Cross Dissolve as Premiere Pro renders it (measured against its renders, docs/gaps.md G1): the
+/// two frames are mixed in sRGB-encoded (display) values, not in linear light, and the weight of B
+/// follows the ease 3p² − 2p³ (Premiere's default Bezier ease) rather than `p`. A mid-dissolve of
+/// a bright and a dark frame is therefore darker than a linear-light mix. Alpha mixes linearly;
+/// colour is encoded unpremultiplied and re-premultiplied, so a side that is transparent (a
+/// dissolve from or to nothing) fades the other side's opacity, as before.
+pub(crate) fn cross_dissolve(a: &Image, b: &Image, p: f32) -> Image {
+    let w = smoothstep(0.0, 1.0, p);
+    let mut out = Image::new(a.w, a.h);
+    out.px.par_chunks_mut(4).zip(a.px.par_chunks(4).zip(b.px.par_chunks(4))).for_each(|(o, (x, y))| {
+        let (Ok(x), Ok(y)) = (<[f32; 4]>::try_from(x), <[f32; 4]>::try_from(y)) else { return };
+        o.copy_from_slice(&encoded_mix(x, y, w));
+    });
+    out
+}
+
+/// Premultiplied linear `a` and `b` mixed `w` of the way in sRGB-encoded values.
+pub(crate) fn encoded_mix(a: [f32; 4], b: [f32; 4], w: f32) -> [f32; 4] {
+    let alpha = a[3] + (b[3] - a[3]) * w;
+    if alpha <= 0.0 || !alpha.is_finite() {
+        return [0.0; 4];
+    }
+    // encoded straight colour, premultiplied again so a transparent side weighs nothing
+    let enc = |c: [f32; 4], k: usize| if c[3] > 0.0 { encode(c[k] / c[3]) * c[3] } else { 0.0 };
+    let mut out = [0.0, 0.0, 0.0, alpha];
+    for (k, v) in out.iter_mut().take(3).enumerate() {
+        let e = enc(a, k) + (enc(b, k) - enc(a, k)) * w;
+        *v = decode(e / alpha) * alpha;
+    }
+    out
+}
+
+/// The sRGB curve, extended to negative values by symmetry.
+fn encode(v: f32) -> f32 {
+    filmcraft_color::linear_to_srgb(v.abs()).copysign(v)
+}
+
+fn decode(v: f32) -> f32 {
+    filmcraft_color::srgb_to_linear(v.abs()).copysign(v)
+}
+
 pub(super) fn apply(id: &str, t: &Tx) -> Option<Image> {
     let p = t.p;
     Some(match id {
+        "cross_dissolve" => cross_dissolve(t.a, t.b, p),
         "blur_dissolve" => {
             let sigma = t.px("blur") * 0.5;
             let k = smoothstep(0.25, 0.75, p);

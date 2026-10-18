@@ -101,11 +101,13 @@ picture PSNR ≥ 35 dB, mean ΔE₀₀ ≤ 2, p95 ≤ 6 (the baseline cut ≥ 40
 
 A case whose failure is understood and filed carries `known_failure: Some(reason)`: it is scored and
 reported as *known*, stays out of the pass rate (and `--min`), and the report says when it passes
-again so the mark can come off. Nine cases are marked today (the first run against Premiere Pro
-26.5.2, 2026-10-16): the five sound cases (our FCP7 XML writes a stereo clip as one clip item, which
-Premiere plays as mono at −3 dB), Dip to Black (Premiere imports it as a Cross Dissolve), Cross
-Dissolve (Premiere blends in gamma-encoded space), Gaussian Blur and Brightness & Contrast (just
-under 35 dB). Each is one fix in `interchange` or `render`, then one line here.
+again so the mark can come off. Nine cases were marked after the first run against Premiere Pro
+26.5.2 (2026-10-16); eight are today: the five sound cases (our FCP7 XML writes a stereo clip as one
+clip item, which Premiere plays as mono at −3 dB), Dip to Black (Premiere imports it as a Cross
+Dissolve), Gaussian Blur and Brightness & Contrast (just under 35 dB). Cross Dissolve came off on
+2026-10-18 at 42.0 dB (from 28.1): Premiere mixes the two clips in sRGB-encoded values on the ease
+3p² − 2p³, which `render` now does too. Each is one fix in `interchange` or `render`, then one line
+here.
 
 ## Reading a render
 

@@ -39,11 +39,34 @@ fn eased(q: f32) -> f32 {
     let v = -2.0*q+2.0;
     return 1.0-v*v*v/2.0;
 }
+// The sRGB curve, extended to negative values by symmetry (CPU `dissolve::encode` / `decode`).
+fn encode(v: vec3<f32>) -> vec3<f32> {
+    let m = abs(v);
+    return sign(v)*select(1.055*pow(m,vec3(1.0/2.4))-0.055, m*12.92, m <= vec3(0.0031308));
+}
+fn decode(v: vec3<f32>) -> vec3<f32> {
+    let m = abs(v);
+    return sign(v)*select(pow((m+0.055)/1.055,vec3(2.4)), m/12.92, m <= vec3(0.04045));
+}
+fn encoded(c: vec4<f32>) -> vec3<f32> {
+    if c.a <= 0.0 { return vec3(0.0); }
+    return encode(c.rgb/c.a)*c.a;
+}
+// Cross Dissolve: mixed in sRGB-encoded values on the 3p²−2p³ ease (CPU `dissolve::cross_dissolve`).
+fn dissolve(at: vec2<u32>, p: f32) -> vec4<f32> {
+    let w = p*p*(3.0-2.0*p);
+    let va = pixel(0u,at); let vb = pixel(1u,at);
+    let alpha = va.a+(vb.a-va.a)*w;
+    if alpha <= 0.0 { return vec4(0.0); }
+    let e = encoded(va)+(encoded(vb)-encoded(va))*w;
+    return vec4(decode(e/alpha)*alpha, alpha);
+}
 @fragment
 fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     let p = params.image.z;
     if p <= 0.0 { return pixel(0u,vec2<u32>(at.xy)); }
     if p >= 1.0 { return pixel(1u,vec2<u32>(at.xy)); }
+    if params.direction.y > 0.5 { return dissolve(vec2<u32>(at.xy), p); }
     var direction = vec2(0.0,1.0);
     switch u32(params.direction.x) { case 1u: { direction=vec2(-1.0,0.0); } case 2u: { direction=vec2(0.0,-1.0); } case 3u: { direction=vec2(1.0,0.0); } default: {} }
     let travel = max(dot(abs(direction),params.image.xy),1.0);

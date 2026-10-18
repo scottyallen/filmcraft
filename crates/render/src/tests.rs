@@ -133,7 +133,8 @@ fn cross_dissolve_midpoint() {
     p.sequence_mut(seq).unwrap().video_tracks[0].transitions.push(tr);
     let img = render_sequence(&p, seq, r.tick_of(24), RenderOptions::default(), &map);
     let c = img.get(10, 10);
-    assert!((c[0] - 0.5).abs() < 0.05 && (c[2] - 0.5).abs() < 0.05, "{c:?}");
+    // mixed half-way in sRGB-encoded values, as Premiere does: each channel is linear 0.214
+    assert!((c[0] - 0.214).abs() < 0.005 && (c[2] - 0.214).abs() < 0.005, "{c:?}");
     // Iris Round at 50 %: B opens in the centre; reversed, A closes into the centre instead.
     for reverse in [false, true] {
         let trs = &mut p.sequence_mut(seq).unwrap().video_tracks[0].transitions;

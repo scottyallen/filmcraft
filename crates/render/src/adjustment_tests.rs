@@ -268,14 +268,14 @@ fn a_dissolve_fades_the_adjustment_layers_effects_in_and_out() {
     fx(&mut s, adj, "invert");
     dissolve(&mut s, 1, None, Some(adj), 0);
     dissolve(&mut s, 1, Some(adj), None, 36);
-    // fade in over frames 0..12: red → halfway → cyan
+    // fade in over frames 0..12 on the dissolve's 3p² − 2p³ ease: red → halfway → cyan
     assert!(near(at(&s, 0), [1.0, 0.0, 0.0], 1e-3), "{:?}", at(&s, 0));
-    assert!(near(at(&s, 3), [0.75, 0.25, 0.25], 1e-3), "a quarter in: {:?}", at(&s, 3));
+    assert!(near(at(&s, 3), [0.843_75, 0.156_25, 0.156_25], 1e-3), "a quarter in: {:?}", at(&s, 3));
     assert!(near(at(&s, 6), [0.5, 0.5, 0.5], 1e-3), "halfway in: {:?}", at(&s, 6));
     assert!(near(at(&s, 24), [0.0, 1.0, 1.0], 1e-3), "{:?}", at(&s, 24));
     // fade out over frames 36..48
     assert!(near(at(&s, 42), [0.5, 0.5, 0.5], 1e-3), "halfway out: {:?}", at(&s, 42));
-    assert!(near(at(&s, 45), [0.75, 0.25, 0.25], 1e-3), "three quarters out: {:?}", at(&s, 45));
+    assert!(near(at(&s, 45), [0.843_75, 0.156_25, 0.156_25], 1e-3), "three quarters out: {:?}", at(&s, 45));
 }
 
 /// The layer's own opacity and blend mode still count during the fade.
@@ -319,8 +319,8 @@ fn a_transition_with_an_adjustment_layer_is_not_planned_as_layers() {
     let q = s.p.sequence(s.seq).unwrap();
     // frame 20 is still on the blue clip, but the dissolve into the adjustment layer shows
     assert!(!crate::plan::layered_at(&s.p, q, R.tick_of(20)));
-    // halfway (frame 24): half blue, half the inverted red (cyan)
-    assert!(near(at(&s, 24), [0.0, 0.5, 1.0], 1e-3), "{:?}", at(&s, 24));
+    // halfway (frame 24): half blue, half the inverted red (cyan), mixed in encoded values
+    assert!(near(at(&s, 24), [0.0, 0.214, 1.0], 1e-3), "{:?}", at(&s, 24));
 }
 
 /// The picture's bounds (in sequence pixels) and the share of the frame it covers.

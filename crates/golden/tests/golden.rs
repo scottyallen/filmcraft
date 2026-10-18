@@ -885,8 +885,13 @@ fn gpu_transition_of_blended_clips_matches_cpu_render() {
     b.transition(1, "cross_dissolve", ca, cb, 24, 12);
     let s = b.at(22);
     let plan = filmcraft_render::plan::plan_frame(&s.project, s.seq, RATE.tick_of(s.frame), RenderOptions::default(), &s.sources);
-    let filmcraft_render::plan::FramePlan::Layers { layers, .. } = &plan else { panic!("planned as a CPU image") };
-    assert!(layers.iter().all(|l| l.blend == filmcraft_render::Blend::Normal));
+    // the dissolve is a transition step whose two sides the GPU renders apart and mixes
+    let filmcraft_render::plan::FramePlan::Composite { steps, .. } = &plan else { panic!("not planned as GPU steps") };
+    let sides = steps.iter().filter_map(|st| match st {
+        filmcraft_render::plan::PlanStep::Transition { inputs, .. } => Some(inputs),
+        _ => None,
+    });
+    assert!(sides.flatten().flatten().all(|l| l.blend == filmcraft_render::Blend::Normal));
     let mut c = filmcraft_gpu::GpuCompositor::new(&dev, &q);
     c.composite(&plan);
     let (gw, gh, mut px) = c.read_output().expect("GPU readback");
