@@ -488,6 +488,7 @@ def export_stills_with_preset(bridge, seq_id, out_dir, stem, frames, preset):
         names = stills_of(out_dir, stem)
         if len(names) >= frames:
             wait_for_file(os.path.join(out_dir, names[-1]), 60)
+            names = stills_of(out_dir, stem)  # Media Encoder may have written more meanwhile
             if len(names) > frames:
                 raise Failure(f"Media Encoder wrote {len(names)} stills, expected {frames}")
             return
