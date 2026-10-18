@@ -117,9 +117,11 @@ impl Outcome {
         self.results.iter().filter(|r| !matches!(r.verdict, Verdict::NoReference)).count()
     }
 
-    /// Compared cases that are marked as known failures (whatever they scored).
+    /// Compared cases that are marked as known failures and were scored (whatever the score): a
+    /// marked case whose reference could not be scored is a plain failure and counts against the
+    /// pass rate.
     pub fn known(&self) -> usize {
-        self.results.iter().filter(|r| r.known_failure.is_some() && !matches!(r.verdict, Verdict::NoReference)).count()
+        self.results.iter().filter(|r| r.known_failure.is_some() && matches!(r.verdict, Verdict::Known(_) | Verdict::Pass)).count()
     }
 
     /// Passing cases among the ones expected to pass.
@@ -312,15 +314,18 @@ pub fn run(opts: &Options) -> Result<Outcome, Error> {
                 // a reference that cannot be read or scored (a half-written movie, a corrupt
                 // still, the wrong size) fails this case and no other: the run goes on and the
                 // report names it
-                let (v, a, judged) = match score_case(def, &ours, r, &opts.settings) {
+                let (v, a, judged, scored) = match score_case(def, &ours, r, &opts.settings) {
                     Ok((v, a)) => {
+                        let scored = v.is_some() || a.is_some();
                         let judged = judge(def, v.as_ref(), a.as_ref());
-                        (v, a, judged)
+                        (v, a, judged, scored)
                     }
-                    Err(e) => (None, None, Verdict::Fail(vec![format!("the reference could not be scored: {e}")])),
+                    Err(e) => (None, None, Verdict::Fail(vec![format!("the reference could not be scored: {e}")]), false),
                 };
+                // only a scored tolerance failure is the *known* kind; a reference that could not
+                // be scored, or has no picture / no sound, is a broken reference whatever the mark
                 let verdict = match (judged, def.known_failure) {
-                    (Verdict::Fail(why), Some(_)) => Verdict::Known(why),
+                    (Verdict::Fail(why), Some(_)) if scored => Verdict::Known(why),
                     (verdict, _) => verdict,
                 };
                 (v, a, verdict)
@@ -572,6 +577,17 @@ mod tests {
         let report = std::fs::read_to_string(&o.report).unwrap();
         assert!(report.contains("- [ ] `cut` (Hard cut): the reference could not be scored:"), "{report}");
         assert!(o.manifest.is_file() && o.premiere_md.is_file());
+
+        // a broken reference on a case *marked* known is a failure, not a known failure: the mark
+        // explains a score, not a reference that cannot be read
+        std::fs::write(&wav, b"not a wav").unwrap();
+        let o = run(&with_ref).unwrap();
+        let Verdict::Fail(why) = &o.results[1].verdict else { panic!("{:?}", o.results[1].verdict) };
+        assert!(why[0].starts_with("the reference could not be scored:"), "{why:?}");
+        assert_eq!((o.compared(), o.known(), o.passed(), o.pass_rate()), (2, 0, 0, 0.0));
+        assert!(o.summary().starts_with("fidelity: 0/2 cases pass (0.0%), 0 without"), "{}", o.summary());
+        let report = std::fs::read_to_string(&o.report).unwrap();
+        assert!(report.contains("## Failing (2)") && report.contains("## Known failures (0)"), "{report}");
 
         // an unknown case is refused by name
         let bad = Options { only: vec!["nope".into()], ..opts };
