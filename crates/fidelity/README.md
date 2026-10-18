@@ -45,7 +45,7 @@ Premiere's standard effects; the generated `PREMIERE.md` lists the exact steps a
 | `cross_dissolve`, `dip_to_black` | Transitions | picture | XML | transition alignment, handles and curves |
 | `gaussian_blur`, `brightness_contrast`, `crop`, `black_white`, `invert` | Effects | picture | manual | one standard effect each, at stated values (Gaussian Blur (Legacy): Premiere Pro 2026 gave the plain name to its new Impact-based blur) |
 | `speed_50`, `speed_200` | Speed | picture | XML | which source frame each output frame shows (Time Remap) |
-| `audio_cut`, `audio_gain_minus6`, `audio_pan_left`, `audio_constant_power`, `audio_level_ramp` | Audio | sound | XML | the sound baseline, the dB law, the balance law, the crossfade curve, dB-vs-gain ramps |
+| `audio_cut`, `audio_gain_minus6`, `audio_pan_left`, `audio_constant_power`, `audio_level_ramp` | Audio | sound | XML | the sound baseline, the dB law, the balance law (carried as the levels of the two hard-panned halves FCP7 XML writes a stereo clip as), the crossfade curve, dB-vs-gain ramps |
 
 Adding a case is one `CaseDef` in `src/corpus.rs`: a builder function placing clips on the
 two video and two audio tracks (`Builder::{video, audio, set, keyframe, add_effect, transition,
@@ -102,8 +102,9 @@ picture PSNR ≥ 35 dB, mean ΔE₀₀ ≤ 2, p95 ≤ 6 (the baseline cut ≥ 40
 A case whose failure is understood and filed carries `known_failure: Some(reason)`: it is scored and
 reported as *known*, stays out of the pass rate (and `--min`), and the report says when it passes
 again so the mark can come off. Nine cases are marked today (the first run against Premiere Pro
-26.5.2, 2026-10-16): the five sound cases (our FCP7 XML writes a stereo clip as one clip item, which
-Premiere plays as mono at −3 dB), Dip to Black (Premiere imports it as a Cross Dissolve), Cross
+26.5.2, 2026-10-16): the five sound cases (our FCP7 XML wrote a stereo clip as one clip item, which
+Premiere played as mono at −3 dB; it now writes the two linked halves Premiere writes, and the marks
+come off once Premiere renders them again), Dip to Black (Premiere imports it as a Cross Dissolve), Cross
 Dissolve (Premiere blends in gamma-encoded space), Gaussian Blur and Brightness & Contrast (just
 under 35 dB). Each is one fix in `interchange` or `render`, then one line here.
 
