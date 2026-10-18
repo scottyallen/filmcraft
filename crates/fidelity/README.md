@@ -101,11 +101,11 @@ picture PSNR ≥ 35 dB, mean ΔE₀₀ ≤ 2, p95 ≤ 6 (the baseline cut ≥ 40
 
 A case whose failure is understood and filed carries `known_failure: Some(reason)`: it is scored and
 reported as *known*, stays out of the pass rate (and `--min`), and the report says when it passes
-again so the mark can come off. Nine cases are marked today (the first run against Premiere Pro
+again so the mark can come off. Eight cases are marked today (the first run against Premiere Pro
 26.5.2, 2026-10-16): the five sound cases (our FCP7 XML writes a stereo clip as one clip item, which
 Premiere plays as mono at −3 dB), Dip to Black (Premiere imports it as a Cross Dissolve), Cross
-Dissolve (Premiere blends in gamma-encoded space), Gaussian Blur and Brightness & Contrast (just
-under 35 dB). Each is one fix in `interchange` or `render`, then one line here.
+Dissolve (Premiere blends in gamma-encoded space) and Gaussian Blur (just under 35 dB);
+Brightness & Contrast, marked at 34.4 dB, passes at 55.2 dB since its curve was fixed (2026-10-18). Each is one fix in `interchange` or `render`, then one line here.
 
 ## Reading a render
 
@@ -132,8 +132,9 @@ complete).
 ## Limitations
 
 - The tolerances are provisional: the first full run (2026-10-16, Premiere Pro 26.5.2) put the
-  baseline `cut` at PSNR 47.8 dB, mean ΔE₀₀ 0.14, p95 0.69, and 11 of 20 cases pass; the other
-  nine are marked known failures (above) until their fixes land.
+  baseline `cut` at PSNR 47.8 dB, mean ΔE₀₀ 0.14, p95 0.69, and 11 of 20 cases pass; 12 since the
+  Brightness & Contrast fix (2026-10-18). The other eight are marked known failures (above) until
+  their fixes land.
 - FCP7 XML carries Motion, Opacity, Time Remap, Audio Levels / Pan and transitions, not standard
   effects, so five cases need hand work in Premiere per run; effects with keyframes, masks, blend
   modes, Lumetri and audio effects are not in the corpus yet (each is one `CaseDef`).
