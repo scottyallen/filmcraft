@@ -286,8 +286,14 @@ fn wasm() -> Result<(), String> {
 /// The wasm-bindgen CLI must match the `wasm-bindgen` crate version exactly.
 const WASM_BINDGEN: &str = "0.2.129";
 
+/// The target directory cargo was told to use: `CARGO_TARGET_DIR`, else `CARGO_BUILD_TARGET_DIR`
+/// (the environment form of `build.target-dir`), else `None` for cargo's default.
+fn configured_target_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("CARGO_TARGET_DIR").or_else(|| std::env::var_os("CARGO_BUILD_TARGET_DIR")).map(std::path::PathBuf::from)
+}
+
 fn target_dir() -> std::path::PathBuf {
-    std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"))
+    configured_target_dir().unwrap_or_else(|| std::path::PathBuf::from("target"))
 }
 
 /// Build the web app into `<target>/web/dist` (see docs/web.md).
@@ -497,8 +503,9 @@ fn fidelity(root: &std::path::Path, args: &[String]) -> Result<(), String> {
     if !args.iter().any(|a| a == "--out") {
         // absolute: the XML the maintainer imports into Premiere must name the media by full path.
         // Cargo's default target directory is the workspace root's, wherever the task is run from;
-        // a relative CARGO_TARGET_DIR is relative to the working directory, as for cargo itself
-        let target = match std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from) {
+        // a relative CARGO_TARGET_DIR / CARGO_BUILD_TARGET_DIR is relative to the working
+        // directory, as for cargo itself
+        let target = match configured_target_dir() {
             Some(t) if t.is_absolute() => t,
             Some(t) => std::env::current_dir().map_err(|e| e.to_string())?.join(t),
             None => root.join("target"),
