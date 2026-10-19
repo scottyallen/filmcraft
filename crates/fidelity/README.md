@@ -45,7 +45,7 @@ Premiere's standard effects; the generated `PREMIERE.md` lists the exact steps a
 | `cross_dissolve`, `dip_to_black` | Transitions | picture | XML | transition alignment, handles and curves |
 | `gaussian_blur`, `brightness_contrast`, `crop`, `black_white`, `invert` | Effects | picture | manual | one standard effect each, at stated values (Gaussian Blur (Legacy): Premiere Pro 2026 gave the plain name to its new Impact-based blur) |
 | `speed_50`, `speed_200` | Speed | picture | XML | which source frame each output frame shows (Time Remap) |
-| `audio_cut`, `audio_gain_minus6`, `audio_pan_left`, `audio_constant_power`, `audio_level_ramp` | Audio | sound | XML | the sound baseline, the dB law, the balance law, the crossfade curve, dB-vs-gain ramps |
+| `audio_cut`, `audio_gain_minus6`, `audio_pan_left`, `audio_constant_power`, `audio_level_ramp` | Audio | sound | XML | the sound baseline, the dB law, the balance law (carried as the levels of the two hard-panned halves FCP7 XML writes a stereo clip as), the crossfade curve, dB-vs-gain ramps |
 
 Adding a case is one `CaseDef` in `src/corpus.rs`: a builder function placing clips on the
 two video and two audio tracks (`Builder::{video, audio, set, keyframe, add_effect, transition,
@@ -101,9 +101,9 @@ picture PSNR ≥ 35 dB, mean ΔE₀₀ ≤ 2, p95 ≤ 6 (the baseline cut ≥ 40
 
 A case whose failure is understood and filed carries `known_failure: Some(reason)`: it is scored and
 reported as *known*, stays out of the pass rate (and `--min`), and the report says when it passes
-again so the mark can come off. Nine cases are marked today (the first run against Premiere Pro
-26.5.2, 2026-10-16): the five sound cases (our FCP7 XML writes a stereo clip as one clip item, which
-Premiere plays as mono at −3 dB), Dip to Black (Premiere imports it as a Cross Dissolve), Cross
+again so the mark can come off. Six cases are marked today (the first run against Premiere Pro
+26.5.2, 2026-10-16, and the audio re-render of 2026-10-19): the Constant Power crossfade (Premiere's
+curve is not cos/sin), the Audio Levels ramp (Premiere interpolates in gain^0.45, not dB), Dip to Black (Premiere imports it as a Cross Dissolve), Cross
 Dissolve (Premiere blends in gamma-encoded space), Gaussian Blur and Brightness & Contrast (just
 under 35 dB). Each is one fix in `interchange` or `render`, then one line here.
 
@@ -132,8 +132,9 @@ complete).
 ## Limitations
 
 - The tolerances are provisional: the first full run (2026-10-16, Premiere Pro 26.5.2) put the
-  baseline `cut` at PSNR 47.8 dB, mean ΔE₀₀ 0.14, p95 0.69, and 11 of 20 cases pass; the other
-  nine are marked known failures (above) until their fixes land.
+  baseline `cut` at PSNR 47.8 dB, mean ΔE₀₀ 0.14, p95 0.69, and 11 of 20 cases pass; three of
+  the five sound cases pass since the stereo clip-item fix; the rest are marked known failures (above)
+  until their fixes land.
 - FCP7 XML carries Motion, Opacity, Time Remap, Audio Levels / Pan and transitions, not standard
   effects, so five cases need hand work in Premiere per run; effects with keyframes, masks, blend
   modes, Lumetri and audio effects are not in the corpus yet (each is one `CaseDef`).

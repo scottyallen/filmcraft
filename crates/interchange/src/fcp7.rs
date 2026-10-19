@@ -11,6 +11,12 @@
 //! Audio Levels and Audio Pan, all with keyframes. Other effects are written with our effect ids
 //! and read back by id or display name; anything unknown is reported.
 //!
+//! Stereo: a clip of a two-channel file is written as Premiere writes it, two mono clip items
+//! (`sourcetrack/trackindex` 1 and 2) on a pair of XML tracks (`outputchannelindex` 1 and 2),
+//! linked with one `groupindex`, each with an Audio Pan hard to its side; FCP7 XML has no balance
+//! for a stereo pair, so the clip's Balance becomes the halves' levels. Import reads such a pair
+//! (same file, times and effects, panned to their sides) back as one stereo clip.
+//!
 //! Coordinates: Basic Motion `center` is written relative to the frame centre as a fraction of the
 //! frame width/height (0,0 = centred); `centerOffset` (anchor) likewise relative to the source.
 //! Keyframe `when` values and clip markers are source (media) frames, like `in`/`out`.
@@ -27,9 +33,9 @@ use filmcraft_time::{FrameRate, Tick, format_timecode_frames};
 use roxmltree::Node;
 
 use crate::common::{
-    Builder, MediaSpec, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path, kind_from_ext, label_from, on_frame,
-    param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, set_param, settings_for, standard_effects, timebase, transition_effect,
-    transition_name, unscaled,
+    Builder, MediaSpec, balance_for, balance_gains, base_item, db_to_gain, empty_sequence, file_name, frames_round, gain_to_db, item_media, item_path,
+    kind_from_ext, label_from, on_frame, param, param_modified, path_to_file_url, rate_from_timebase, resolve_path, set_param, settings_for, standard_effects,
+    timebase, transition_effect, transition_name, unscaled,
 };
 use crate::xml::{XmlWriter, bool_str, child, child_bool, child_f64, child_i64, child_text, children, elements, num, path_text};
 use crate::{Error, ExportOptions, Format, ImportOptions, Imported, Report, Result};
@@ -175,6 +181,10 @@ pub(crate) fn import(text_in: &str, opts: &ImportOptions, report: &mut Report) -
     }
     imp.walk_container(root, None, true);
     imp.resolve_links();
+    let seqs: Vec<ItemId> = imp.seq_items.values().copied().collect();
+    for s in seqs {
+        imp.merge_stereo_halves(s);
+    }
     if imp.b.p.items.is_empty() {
         return Err(Error::Empty);
     }
@@ -261,9 +271,12 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             let sc = child(v, "samplecharacteristics").unwrap_or(v);
             (child_i64(sc, "width").unwrap_or(1920) as u32, child_i64(sc, "height").unwrap_or(1080) as u32)
         });
+        // Premiere describes a file's sound as one `<audio>` per source channel (`channelcount` 1
+        // each, the stereo pair of our QuickTime files as two), so the channels are their sum.
+        let channels: i64 = child(def, "media").map_or(0, |m| children(m, "audio").map(|a| child_i64(a, "channelcount").unwrap_or(2).clamp(1, 64)).sum());
         let aud = audio.map(|a| {
             let sc = child(a, "samplecharacteristics").unwrap_or(a);
-            (child_i64(sc, "samplerate").unwrap_or(48_000) as u32, child_i64(a, "channelcount").unwrap_or(2) as u32)
+            (child_i64(sc, "samplerate").unwrap_or(48_000) as u32, channels.clamp(1, 64) as u32)
         });
         let r = rate.unwrap_or_default();
         let path = child_text(def, "pathurl").filter(|s| !s.is_empty());
@@ -704,6 +717,118 @@ impl<'a, 'i> Imp<'a, 'i, '_> {
             }
         }
     }
+
+    /// Put the halves of a stereo clip back together: two linked one-channel clips of the same
+    /// two-channel file, at the same times, playing its two channels hard left and hard right,
+    /// with the same effects (as our export writes a stereo clip, and Premiere a split one) become
+    /// one stereo clip on the left half's track. Levels that differ by a constant become the
+    /// clip's Balance. An audio track the right halves leave empty is removed.
+    fn merge_stereo_halves(&mut self, seq_id: ItemId) {
+        let p = &self.b.p;
+        let Some(seq) = p.sequence(seq_id) else { return };
+        let stereo_file = |id: ItemId| item_media(p, base_item(p, id)).and_then(|m| m.info.audio()).is_some_and(|a| a.channels == 2);
+        let side = |it: &TrackItem| match it.effect("panner").filter(|e| e.enabled).and_then(|e| e.param("balance")) {
+            Some(b) if !b.is_animated() => b.value.as_f64().filter(|v| v.abs() == 100.0),
+            _ => None,
+        };
+        // (left track, left clip, right track, right clip, Balance, Volume level)
+        let mut merges: Vec<(usize, ClipId, usize, ClipId, f64, Option<Param>)> = Vec::new();
+        let mut taken: HashSet<ClipId> = HashSet::new();
+        let tracks = seq.tracks(TrackKind::Audio);
+        let cands: Vec<(usize, &TrackItem)> = tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(ti, t)| t.items.iter().map(move |c| (ti, c)))
+            .filter(|(_, c)| c.source_channels.len() == 1 && c.link.is_some() && stereo_file(c.item) && side(c) == Some(-100.0))
+            .collect();
+        for (lt, l) in cands {
+            let r = tracks.iter().enumerate().filter(|(rt, _)| *rt != lt).flat_map(|(rt, t)| t.items.iter().map(move |c| (rt, c))).find(|(_, r)| {
+                !taken.contains(&r.id)
+                    && r.link == l.link
+                    && r.item == l.item
+                    && r.source_channels.len() == 1
+                    && r.source_channels != l.source_channels
+                    && side(r) == Some(100.0)
+                    && (r.start, r.duration, r.source_in, r.speed, r.reverse, r.frame_hold, r.enabled)
+                        == (l.start, l.duration, l.source_in, l.speed, l.reverse, l.frame_hold, l.enabled)
+                    && r.gain_db == l.gain_db
+                    && r.effects
+                        .iter()
+                        .filter(|e| e.effect != "panner" && e.effect != "volume")
+                        .eq(l.effects.iter().filter(|e| e.effect != "panner" && e.effect != "volume"))
+            });
+            let Some((rt, r)) = r else { continue };
+            let level = |c: &TrackItem| c.effect("volume").filter(|e| e.enabled).and_then(|e| e.param("level")).cloned();
+            let (ll, rl) = (level(l), level(r));
+            let (volume, balance) = if ll == rl {
+                (ll, 0.0)
+            } else if let Some(d) = level_offset(&ll, &rl) {
+                // The louder side is the level, the quieter one's attenuation the Balance.
+                let bal = balance_for(db_to_gain(-d.abs()), d > 0.0);
+                (Some(if d >= 0.0 { ll } else { rl }.unwrap_or_else(|| Param::new(ParamValue::Float(0.0)))), bal)
+            } else {
+                continue;
+            };
+            taken.insert(l.id);
+            taken.insert(r.id);
+            merges.push((lt, l.id, rt, r.id, balance, volume));
+        }
+        if merges.is_empty() {
+            return;
+        }
+        let Some(seq) = self.b.p.sequence_mut(seq_id) else { return };
+        let mut emptied: Vec<usize> = Vec::new();
+        for (_, lid, rt, rid, balance, volume) in merges {
+            let Some(rch) = seq.find_item(rid).and_then(|(_, r)| r.source_channels.first().copied()) else { continue };
+            if let Some(t) = seq.tracks_mut(TrackKind::Audio).get_mut(rt) {
+                t.items.retain(|c| c.id != rid);
+                t.transitions.retain(|tr| tr.from != Some(rid) && tr.to != Some(rid));
+                if t.items.is_empty() && t.transitions.is_empty() {
+                    emptied.push(rt);
+                }
+            }
+            let Some((_, l)) = seq.find_item_mut(lid) else { continue };
+            let lch = l.source_channels.first().copied().unwrap_or(0);
+            l.source_channels = if (lch, rch) == (0, 1) { Vec::new() } else { vec![lch, rch] };
+            set_param(l, "panner", "balance", Param::new(ParamValue::Float(if balance.abs() < 1e-9 { 0.0 } else { balance })));
+            set_param(l, "volume", "level", volume.unwrap_or_else(|| Param::new(ParamValue::Float(0.0))));
+            // A link group of one is no link.
+            if let Some(g) = l.link
+                && seq.all_tracks().flat_map(|t| &t.items).filter(|c| c.link == Some(g)).count() < 2
+                && let Some((_, l)) = seq.find_item_mut(lid)
+            {
+                l.link = None;
+            }
+        }
+        emptied.sort_unstable();
+        emptied.dedup();
+        for t in emptied.into_iter().rev() {
+            if seq.audio_tracks.len() > 1 && seq.audio_tracks.get(t).is_some_and(|t| t.items.is_empty() && t.transitions.is_empty()) {
+                seq.audio_tracks.remove(t);
+            }
+        }
+    }
+}
+
+/// How many dB louder the left half's level is than the right half's, when the two differ by the
+/// same amount everywhere: two static levels, or keyframes at the same times and with the same
+/// interpolation whose values all differ by one offset (our export folds a Balance in this way).
+fn level_offset(l: &Option<Param>, r: &Option<Param>) -> Option<f64> {
+    let zero = Param::new(ParamValue::Float(0.0));
+    let (l, r) = (l.as_ref().unwrap_or(&zero), r.as_ref().unwrap_or(&zero));
+    if !l.is_animated() && !r.is_animated() {
+        return Some(l.value.as_f64()? - r.value.as_f64()?);
+    }
+    if l.keyframes.len() != r.keyframes.len() {
+        return None;
+    }
+    let mut offsets = l.keyframes.iter().zip(&r.keyframes).map(|(a, b)| {
+        let same = (a.time, a.interp, a.out_influence, a.in_influence) == (b.time, b.interp, b.out_influence, b.in_influence);
+        if same { Some(a.value.as_f64()? - b.value.as_f64()?) } else { None }
+    });
+    let d = offsets.next()??;
+    // The levels went through the XML as gains, so allow for the rounding.
+    offsets.all(|o| o.is_some_and(|o| (o - d).abs() < 1e-4)).then_some(d)
 }
 
 fn read_color(v: Node) -> [f32; 4] {
@@ -783,6 +908,24 @@ fn read_markers(n: Node, rate: FrameRate, b: &mut Builder) -> Vec<Marker> {
 // Export
 // ---------------------------------------------------------------------------------------------
 
+/// One written clip item, as a `<link>` names it.
+#[derive(Clone)]
+struct XmlRef {
+    id: String,
+    kind: TrackKind,
+    track: usize,
+    index: usize,
+    /// The channel group of a stereo clip's halves (`groupindex`).
+    group: Option<usize>,
+}
+
+/// Which half of a stereo clip a clip item is: its source channel and its side.
+#[derive(Clone, Copy)]
+struct Half {
+    channel: u16,
+    right: bool,
+}
+
 struct Exp<'a, 'r> {
     p: &'a Project,
     opts: &'a ExportOptions,
@@ -855,23 +998,46 @@ impl Exp<'_, '_> {
         self.w.text("label2", it.label.name());
         self.w.close();
         self.w.open("media", &[]);
-        // Link table: ClipId -> (xml id, kind, track index, clip index).
-        let mut clip_xml: HashMap<ClipId, (String, TrackKind, usize, usize)> = HashMap::new();
-        for kind in [TrackKind::Video, TrackKind::Audio] {
-            for (ti, t) in seq.tracks(kind).iter().enumerate() {
-                for (ci, c) in t.items.iter().enumerate() {
-                    let xid = format!("clipitem-{}", self.next_clip);
-                    self.next_clip += 1;
-                    clip_xml.insert(c.id, (xid, kind, ti + 1, ci + 1));
-                }
-            }
-        }
         let mut link_members: HashMap<u64, Vec<ClipId>> = HashMap::new();
         for t in seq.all_tracks() {
             for c in &t.items {
                 if let Some(l) = c.link {
                     link_members.entry(l).or_default().push(c.id);
                 }
+            }
+        }
+        // A stereo clip is written as two mono clip items, its left and right source channels, on
+        // a pair of XML tracks, as Premiere writes it: one clip item with source track 1 plays in
+        // Premiere as channel 1 alone, centred (#2152). So an audio track holding a stereo clip
+        // becomes two XML tracks, the second holding the right halves.
+        let halves: HashMap<ClipId, [u16; 2]> =
+            seq.tracks(TrackKind::Audio).iter().flat_map(|t| &t.items).filter_map(|c| Some((c.id, self.stereo_halves(c)?))).collect();
+        let paired: Vec<bool> = seq.tracks(TrackKind::Audio).iter().map(|t| t.items.iter().any(|c| halves.contains_key(&c.id))).collect();
+        // Link table: ClipId -> its clip items' (xml id, kind, XML track index, clip index, channel group).
+        let mut clip_xml: HashMap<ClipId, Vec<XmlRef>> = HashMap::new();
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            let mut xml_track = 1;
+            for (ti, t) in seq.tracks(kind).iter().enumerate() {
+                let mut right_index = 0;
+                for (ci, c) in t.items.iter().enumerate() {
+                    let mut refs = vec![XmlRef { id: format!("clipitem-{}", self.next_clip), kind, track: xml_track, index: ci + 1, group: None }];
+                    self.next_clip += 1;
+                    if halves.contains_key(&c.id) {
+                        // The channel group of the pair among the stereo clips of its link group.
+                        let group = c
+                            .link
+                            .and_then(|l| link_members.get(&l))
+                            .and_then(|m| m.iter().filter(|id| halves.contains_key(id)).position(|id| *id == c.id))
+                            .unwrap_or(0)
+                            + 1;
+                        right_index += 1;
+                        refs[0].group = Some(group);
+                        refs.push(XmlRef { id: format!("clipitem-{}", self.next_clip), kind, track: xml_track + 1, index: right_index, group: Some(group) });
+                        self.next_clip += 1;
+                    }
+                    clip_xml.insert(c.id, refs);
+                }
+                xml_track += if paired.get(ti) == Some(&true) { 2 } else { 1 };
             }
         }
         if seq.all_tracks().any(|t| t.items.iter().any(|i| i.group.is_some())) {
@@ -895,29 +1061,55 @@ impl Exp<'_, '_> {
             }
             self.w.close();
             self.w.close();
-            for t in seq.tracks(kind) {
-                self.w.open("track", &[]);
-                // Clip and transition items in time order.
-                let mut order: Vec<(Tick, u8, usize)> = t.items.iter().enumerate().map(|(i, c)| (c.start, 1, i)).collect();
-                order.extend(t.transitions.iter().enumerate().map(|(i, tr)| (tr.start, 0, i)));
-                order.sort();
-                for (_, k, i) in order {
-                    if k == 1 {
-                        let c = &t.items[i];
-                        let links: Vec<(String, TrackKind, usize, usize)> = c
-                            .link
-                            .and_then(|l| link_members.get(&l))
-                            .map(|m| m.iter().filter_map(|id| clip_xml.get(id).cloned()).collect())
-                            .unwrap_or_default();
-                        let xid = clip_xml[&c.id].0.clone();
-                        self.write_clip(c, kind, seq, &xid, &links);
-                    } else {
-                        self.write_transition(&t.transitions[i], kind, rate, t);
+            for (ti, t) in seq.tracks(kind).iter().enumerate() {
+                let pair = kind == TrackKind::Audio && paired.get(ti) == Some(&true);
+                for side in 0..if pair { 2 } else { 1 } {
+                    self.w.open("track", &[]);
+                    // Clip and transition items in time order; the right track has the right halves
+                    // and the transitions between them.
+                    let mut order: Vec<(Tick, u8, usize)> =
+                        t.items.iter().enumerate().filter(|(_, c)| side == 0 || halves.contains_key(&c.id)).map(|(i, c)| (c.start, 1, i)).collect();
+                    order.extend(
+                        t.transitions
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, tr)| side == 0 || [tr.from, tr.to].iter().flatten().any(|id| halves.contains_key(id)))
+                            .map(|(i, tr)| (tr.start, 0, i)),
+                    );
+                    order.sort();
+                    for (_, k, i) in order {
+                        if k == 1 {
+                            let Some(c) = t.items.get(i) else { continue };
+                            // A stereo clip without a link group still links its two halves.
+                            let members = match c.link.and_then(|l| link_members.get(&l)) {
+                                Some(m) => m.clone(),
+                                None if halves.contains_key(&c.id) => vec![c.id],
+                                None => Vec::new(),
+                            };
+                            let links: Vec<XmlRef> = members.iter().filter_map(|id| clip_xml.get(id)).flatten().cloned().collect();
+                            let Some(xid) = clip_xml.get(&c.id).and_then(|r| r.get(side)).map(|r| r.id.clone()) else { continue };
+                            let half = halves.get(&c.id).map(|ch| Half { channel: ch[side], right: side == 1 });
+                            self.write_clip(c, kind, seq, &xid, &links, half);
+                        } else if let Some(tr) = t.transitions.get(i) {
+                            if side == 1 && ![tr.from, tr.to].iter().flatten().all(|id| halves.contains_key(id)) {
+                                // A crossfade with a mono clip: the right track has only the stereo
+                                // side, which fades on its own over its part of the transition.
+                                let Some(one) = one_sided(tr, t, &halves) else { continue };
+                                self.report
+                                    .warn("a crossfade between a stereo and a mono clip fades the stereo clip's right channel over its own side of the cut");
+                                self.write_transition(&one, kind, rate, t);
+                                continue;
+                            }
+                            self.write_transition(tr, kind, rate, t);
+                        }
                     }
+                    self.w.text("enabled", bool_str(t.enabled));
+                    self.w.text("locked", bool_str(t.locked));
+                    if pair {
+                        self.w.text("outputchannelindex", side + 1);
+                    }
+                    self.w.close();
                 }
-                self.w.text("enabled", bool_str(t.enabled));
-                self.w.text("locked", bool_str(t.locked));
-                self.w.close();
             }
             self.w.close();
         }
@@ -1012,7 +1204,21 @@ impl Exp<'_, '_> {
         }
     }
 
-    fn write_clip(&mut self, c: &TrackItem, kind: TrackKind, seq: &Sequence, xid: &str, links: &[(String, TrackKind, usize, usize)]) {
+    /// The source channels (left, right) of a clip written as two mono halves: an audio clip of a
+    /// two-channel media file playing both channels.
+    fn stereo_halves(&self, c: &TrackItem) -> Option<[u16; 2]> {
+        let base = base_item(self.p, c.item);
+        if crate::common::generator_of(self.p, base).is_some() || item_media(self.p, base)?.info.audio()?.channels != 2 {
+            return None;
+        }
+        match c.source_channels.as_slice() {
+            [] => Some([0, 1]),
+            &[l, r] if l != r && l < 2 && r < 2 => Some([l, r]),
+            _ => None,
+        }
+    }
+
+    fn write_clip(&mut self, c: &TrackItem, kind: TrackKind, seq: &Sequence, xid: &str, links: &[XmlRef], half: Option<Half>) {
         let rate = seq.settings.frame_rate;
         if !on_frame(rate, c.start) || !on_frame(rate, c.duration) {
             self.report.warn("sub-frame clip positions were rounded to frames");
@@ -1058,7 +1264,8 @@ impl Exp<'_, '_> {
         if kind == TrackKind::Audio {
             self.w.open("sourcetrack", &[]);
             self.w.text("mediatype", "audio");
-            self.w.text("trackindex", c.source_channels.first().map_or(1, |ch| u32::from(*ch).saturating_add(1)));
+            let ch = half.map(|h| h.channel).or_else(|| c.source_channels.first().copied());
+            self.w.text("trackindex", ch.map_or(1, |ch| u32::from(ch).saturating_add(1)));
             self.w.close();
         }
         if let Some(blend) = param(c, "opacity", "blend").and_then(|p| p.value.as_f64()).map(|v| v as u32).filter(|v| *v != 0) {
@@ -1067,19 +1274,25 @@ impl Exp<'_, '_> {
                 None => self.report.warn("blend mode not representable in FCP7 XML; Normal used"),
             }
         }
-        self.write_filters(c, kind, seq, base);
-        for (lid, lkind, ti, ci) in links {
+        self.write_filters(c, kind, seq, base, half);
+        for l in links {
             self.w.open("link", &[]);
-            self.w.text("linkclipref", lid);
-            self.w.text("mediatype", if *lkind == TrackKind::Video { "video" } else { "audio" });
-            self.w.text("trackindex", ti);
-            self.w.text("clipindex", ci);
+            self.w.text("linkclipref", &l.id);
+            self.w.text("mediatype", if l.kind == TrackKind::Video { "video" } else { "audio" });
+            self.w.text("trackindex", l.track);
+            self.w.text("clipindex", l.index);
+            if let Some(g) = l.group {
+                self.w.text("groupindex", g);
+            }
             self.w.close();
         }
         self.w.open("labels", &[]);
         self.w.text("label2", c.label.name());
         self.w.close();
-        write_markers(&mut self.w, &c.markers, rate);
+        // The markers of a stereo clip go on its left half only, so they are not doubled.
+        if !half.is_some_and(|h| h.right) {
+            write_markers(&mut self.w, &c.markers, rate);
+        }
         self.w.close();
     }
 
@@ -1168,7 +1381,7 @@ impl Exp<'_, '_> {
         self.w.close();
     }
 
-    fn write_filters(&mut self, c: &TrackItem, kind: TrackKind, seq: &Sequence, base: ItemId) {
+    fn write_filters(&mut self, c: &TrackItem, kind: TrackKind, seq: &Sequence, base: ItemId, half: Option<Half>) {
         let rate = seq.settings.frame_rate;
         let (fw, fh) = (seq.settings.width as f64, seq.settings.height as f64);
         let (sw, sh) = match self.p.item(base).map(|i| &i.kind) {
@@ -1209,6 +1422,36 @@ impl Exp<'_, '_> {
                 self.simple_param("reverse", "reverse", bool_str(c.reverse));
                 self.simple_param("frameblending", "frameblending", "FALSE");
                 self.close_effect();
+            }
+        } else if let Some(h) = half {
+            // A half of a stereo clip plays hard on its side; the clip's Balance is folded into the
+            // halves' levels, the attenuation each side gets from it.
+            if c.gain_db != 0.0 && !h.right {
+                self.report.info("clip gain was folded into Audio Levels");
+            }
+            let pan = c.effect("panner").filter(|e| e.enabled).and_then(|e| e.param("balance"));
+            if pan.is_some_and(|p| p.is_animated()) && !h.right {
+                self.report.warn("animated Balance on a stereo clip is not supported by FCP7 XML; its first value was written");
+            }
+            let b = pan.and_then(|p| p.keyframes.first().map(|k| &k.value).unwrap_or(&p.value).as_f64()).unwrap_or(0.0);
+            let (gl, gr) = balance_gains(b);
+            let g = c.gain_db + gain_to_db(if h.right { gr } else { gl });
+            if param_modified(c, "volume", "level") || g != 0.0 {
+                self.open_effect("Audio Levels", "audiolevels", "audiolevels", "audiolevels", "audio", true);
+                self.float_param(c, "volume", "level", "Level", 0.0, 3.98109, rate, move |v| db_to_gain(v + g), "level");
+                self.close_effect();
+            }
+            self.open_effect("Audio Pan", "audiopan", "audiopan", "audiopan", "audio", true);
+            self.w.open("parameter", &[]);
+            self.w.text("parameterid", "pan");
+            self.w.text("name", "Pan");
+            self.w.text("valuemin", "-1");
+            self.w.text("valuemax", "1");
+            self.w.text("value", if h.right { "1" } else { "-1" });
+            self.w.close();
+            self.close_effect();
+            if param_modified(c, "channel_volume", "left") || param_modified(c, "channel_volume", "right") {
+                self.report.warn("Channel Volume is not supported by FCP7 XML and was not exported");
             }
         } else {
             if c.gain_db != 0.0 {
@@ -1403,6 +1646,18 @@ impl Exp<'_, '_> {
         }
         self.close_effect();
     }
+}
+
+/// The stereo side of a transition between a stereo clip and a mono one, as a fade to or from
+/// nothing over the part of the transition on that side of the cut.
+fn one_sided(tr: &Transition, t: &filmcraft_project::Track, halves: &HashMap<ClipId, [u16; 2]>) -> Option<Transition> {
+    let clip = |id: Option<ClipId>| id.filter(|id| halves.contains_key(id)).and_then(|id| t.items.iter().find(|c| c.id == id));
+    let (start, end, from, to) = match (clip(tr.from), clip(tr.to)) {
+        (Some(c), None) => (tr.start, tr.end().min(c.end()), tr.from, None),
+        (None, Some(c)) => (tr.start.max(c.start), tr.end(), None, tr.to),
+        _ => return None,
+    };
+    (end > start).then(|| Transition { start, duration: end - start, from, to, ..tr.clone() })
 }
 
 fn write_color(w: &mut XmlWriter, c: [f32; 4]) {

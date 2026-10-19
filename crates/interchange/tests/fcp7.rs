@@ -663,3 +663,280 @@ fn centred_mono_breakout_round_trips_centred() {
     let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
     assert_eq!(balances(&imp), vec![0.0, 0.0], "{xml}");
 }
+
+/// Per audio clip item: (XML track, source track, Audio Pan, Audio Levels gain, links as (track, clip, group)).
+type AudioItem = (usize, i64, Option<f64>, Option<f64>, Vec<(String, i64, Option<i64>)>);
+
+fn audio_items(xml: &str) -> Vec<AudioItem> {
+    let xml = xml.replace("<!DOCTYPE xmeml>", "");
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let audio = doc
+        .descendants()
+        .find(|n| n.has_tag_name("audio") && n.parent().is_some_and(|p| p.has_tag_name("media")) && n.children().any(|c| c.has_tag_name("track")))
+        .unwrap();
+    fn kid<'a, 'i>(n: roxmltree::Node<'a, 'i>, t: &str) -> Option<roxmltree::Node<'a, 'i>> {
+        n.children().find(|c| c.has_tag_name(t))
+    }
+    let text = |n: roxmltree::Node, t: &str| kid(n, t).and_then(|c| c.text()).map(str::to_string);
+    let filter = |c: roxmltree::Node, id: &str| {
+        c.children()
+            .filter(|f| f.has_tag_name("filter"))
+            .filter_map(|f| kid(f, "effect"))
+            .find(|e| text(*e, "effectid").as_deref() == Some(id))
+            .and_then(|e| kid(e, "parameter"))
+            .and_then(|p| text(p, "value"))
+            .map(|v| v.parse::<f64>().unwrap())
+    };
+    let mut out = Vec::new();
+    for (ti, t) in audio.children().filter(|n| n.has_tag_name("track")).enumerate() {
+        for c in t.children().filter(|n| n.has_tag_name("clipitem")) {
+            let st = kid(c, "sourcetrack").unwrap();
+            let links = c
+                .children()
+                .filter(|l| l.has_tag_name("link"))
+                .map(|l| (text(l, "mediatype").unwrap(), text(l, "trackindex").unwrap().parse().unwrap(), text(l, "groupindex").map(|g| g.parse().unwrap())))
+                .collect();
+            out.push((ti + 1, text(st, "trackindex").unwrap().parse().unwrap(), filter(c, "audiopan"), filter(c, "audiolevels"), links));
+        }
+    }
+    out
+}
+
+fn output_channels(xml: &str) -> Vec<Option<String>> {
+    let xml = xml.replace("<!DOCTYPE xmeml>", "");
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let audio = doc.descendants().find(|n| n.has_tag_name("audio") && n.children().any(|c| c.has_tag_name("track"))).unwrap();
+    audio
+        .children()
+        .filter(|n| n.has_tag_name("track"))
+        .map(|t| t.children().find(|c| c.has_tag_name("outputchannelindex")).and_then(|c| c.text()).map(str::to_string))
+        .collect()
+}
+
+/// A linked video + stereo audio clip, the audio at `level` dB with `balance`.
+fn stereo_project(level: f64, balance: f64) -> (Project, filmcraft_project::ItemId) {
+    let r = FrameRate::FPS_24;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let s = sequence(&mut p, "S", r, false);
+    let v = clip(&mut p, s, TrackKind::Video, 0, a, 0, 72, 0);
+    let au = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 72, 0);
+    link(&mut p, s, &[v, au]);
+    let (_, it) = p.sequence_mut(s).unwrap().find_item_mut(au).unwrap();
+    it.effect_mut("volume").unwrap().params.insert("level".into(), Param::new(ParamValue::Float(level)));
+    it.effect_mut("panner").unwrap().params.insert("balance".into(), Param::new(ParamValue::Float(balance)));
+    (p, s)
+}
+
+fn level_and_balance(p: &Project, s: filmcraft_project::ItemId) -> (f64, f64) {
+    let it = &p.sequence(s).unwrap().audio_tracks[0].items[0];
+    let v = |e: &str, k: &str| it.effect(e).and_then(|e| e.param(k)).and_then(|p| p.value.as_f64()).unwrap();
+    (v("volume", "level"), v("panner", "balance"))
+}
+
+/// G1: a stereo clip written as one clip item with source track 1 plays in Premiere as channel 1
+/// alone, centred at −3 dB. It is written as Premiere writes it: two clip items, source tracks 1
+/// and 2, on a pair of XML tracks (output channels 1 and 2), linked to each other and the video
+/// with one channel group, each panned hard to its side.
+#[test]
+fn stereo_clip_is_written_as_two_linked_mono_halves() {
+    let (p, s) = stereo_project(-6.0, 0.0);
+    let (bytes, rep) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    let xml = String::from_utf8(bytes).unwrap();
+    assert!(!rep.has_warnings(), "{rep}");
+    let items = audio_items(&xml);
+    assert_eq!(items.len(), 2, "{xml}");
+    let half = db_gain(-6.0);
+    let links = vec![("video".to_string(), 1, None), ("audio".to_string(), 1, Some(1)), ("audio".to_string(), 2, Some(1))];
+    assert_eq!((items[0].0, items[0].1), (1, 1));
+    assert_eq!((items[1].0, items[1].1), (2, 2));
+    assert_eq!((items[0].2, items[1].2), (Some(-1.0), Some(1.0)));
+    for it in &items {
+        assert!((it.3.unwrap() - half).abs() < 1e-5, "{xml}");
+        assert_eq!(it.4, links, "{xml}");
+    }
+    // Four audio tracks become five XML tracks: A1's pair, then A2…A4.
+    assert_eq!(output_channels(&xml), vec![Some("1".into()), Some("2".into()), None, None, None]);
+}
+
+fn db_gain(db: f64) -> f64 {
+    10f64.powf(db / 20.0)
+}
+
+/// The two halves read back as the one stereo clip, its level and link intact.
+#[test]
+fn stereo_halves_round_trip_as_one_stereo_clip() {
+    let (p, s) = stereo_project(-6.0, 0.0);
+    let (imp, xml, rep) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    assert!(!rep.has_warnings(), "{rep}");
+    let si = only_seq(&imp);
+    let q = imp.project.sequence(si).unwrap();
+    assert_eq!(q.audio_tracks.len(), 4, "{xml}");
+    let it = &q.audio_tracks[0].items[0];
+    assert!(it.source_channels.is_empty(), "{:?}", it.source_channels);
+    assert_eq!(structure(&imp.project, si, TrackKind::Audio), structure(&p, s, TrackKind::Audio), "{xml}");
+    assert_eq!(links(&imp.project, si), links(&p, s));
+    let (level, balance) = level_and_balance(&imp.project, si);
+    assert!((level + 6.0).abs() < 1e-9 && balance == 0.0, "{level} {balance}");
+}
+
+/// FCP7 XML has no balance for a stereo pair: it is folded into the halves' levels (the right
+/// half of a clip balanced to −50 is 5.3 dB down, the left at unity), and read back as Balance.
+#[test]
+fn stereo_balance_is_folded_into_the_halves_levels() {
+    let (p, s) = stereo_project(-3.0, -50.0);
+    let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    let items = audio_items(&xml);
+    let right = (std::f64::consts::FRAC_PI_8.sin() * std::f64::consts::SQRT_2).log10() * 20.0;
+    assert!((items[0].3.unwrap() - db_gain(-3.0)).abs() < 1e-5, "{xml}");
+    assert!((items[1].3.unwrap() - db_gain(-3.0 + right)).abs() < 1e-5, "{xml}");
+    let (level, balance) = level_and_balance(&imp.project, only_seq(&imp));
+    assert!((level + 3.0).abs() < 1e-4 && (balance + 50.0).abs() < 1e-3, "{level} {balance}");
+    // and the other way
+    let (p, s) = stereo_project(0.0, 30.0);
+    let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    let (level, balance) = level_and_balance(&imp.project, only_seq(&imp));
+    assert!(level.abs() < 1e-4 && (balance - 30.0).abs() < 1e-3, "{level} {balance}\n{xml}");
+}
+
+/// Keyframed levels go on both halves; an audio transition between stereo clips is written on
+/// both tracks of the pair; both read back as the stereo clips had them.
+#[test]
+fn stereo_level_ramp_and_crossfade_round_trip() {
+    let r = FrameRate::FPS_24;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let t = media(&mut p, "/m/tone.wav", false, true, r);
+    let s = sequence(&mut p, "S", r, false);
+    let left = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 36, 0);
+    let right = clip(&mut p, s, TrackKind::Audio, 0, t, 36, 36, 12);
+    transition(&mut p, s, TrackKind::Audio, 0, "constant_power", Some(left), Some(right), 30, 12, TransitionAlign::CenterAtCut);
+    {
+        let (_, it) = p.sequence_mut(s).unwrap().find_item_mut(left).unwrap();
+        let mut lv = Param::new(ParamValue::Float(0.0));
+        lv.keyframes.push(Keyframe::new(r.tick_of(0), ParamValue::Float(0.0)));
+        lv.keyframes.push(Keyframe::new(r.tick_of(35), ParamValue::Float(-24.0)));
+        it.effect_mut("volume").unwrap().params.insert("level".into(), lv);
+    }
+    let (imp, xml, rep) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    assert!(!rep.has_warnings(), "{rep}");
+    assert_eq!(xml.matches("<transitionitem>").count(), 2, "{xml}");
+    assert_eq!(audio_items(&xml).iter().map(|i| (i.0, i.1)).collect::<Vec<_>>(), vec![(1, 1), (1, 1), (2, 2), (2, 2)]);
+    assert_eq!(xml.matches("<keyframe>").count(), 4, "{xml}");
+    let si = only_seq(&imp);
+    assert_eq!(structure(&imp.project, si, TrackKind::Audio), structure(&p, s, TrackKind::Audio), "{xml}");
+    let q = imp.project.sequence(si).unwrap();
+    let lv = q.audio_tracks[0].items[0].effect("volume").unwrap().param("level").unwrap();
+    assert_eq!(lv.keyframes.len(), 2);
+    assert!((lv.keyframes[1].value.as_f64().unwrap() + 24.0).abs() < 1e-9);
+}
+
+/// Premiere's own export of a stereo clip on our media: two linked mono clip items on their own
+/// tracks, source tracks 1 and 2, one channel group, no Audio Pan. It reads as one stereo clip.
+#[test]
+fn premiere_linked_halves_import_as_one_stereo_clip() {
+    let link = |id: &str, kind: &str, track: i64, group: bool| {
+        format!(
+            "<link><linkclipref>{id}</linkclipref><mediatype>{kind}</mediatype><trackindex>{track}</trackindex><clipindex>1</clipindex>{}</link>",
+            if group { "<groupindex>1</groupindex>" } else { "" }
+        )
+    };
+    let links = [link("clipitem-9", "video", 1, false), link("clipitem-10", "audio", 1, true), link("clipitem-11", "audio", 2, true)].concat();
+    let half = |id: &str, ch: i64| {
+        format!(
+            r#"<track premiereTrackType="Stereo" currentExplodedTrackIndex="0" totalExplodedTrackCount="1"><clipitem id="{id}" premiereChannelType="mono"><name>footage_a</name>{RATE}<start>0</start><end>48</end><in>0</in><out>48</out>
+    <file id="file-9"/><sourcetrack><mediatype>audio</mediatype><trackindex>{ch}</trackindex></sourcetrack>{links}</clipitem><enabled>TRUE</enabled><outputchannelindex>{ch}</outputchannelindex></track>"#
+        )
+    };
+    let doc = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4"><sequence id="sequence-1" explodedTracks="true"><name>S</name><duration>48</duration>{RATE}
+  <media><video><track><clipitem id="clipitem-9"><name>footage_a</name>{RATE}<start>0</start><end>48</end><in>0</in><out>48</out>
+    <file id="file-9"><name>footage_a.mov</name><pathurl>file://localhost/media/footage_a.mov</pathurl>{RATE}<duration>48</duration>
+      <media><video><samplecharacteristics><width>640</width><height>360</height></samplecharacteristics></video>
+      <audio><channelcount>1</channelcount><layout>stereo</layout><audiochannel><sourcechannel>1</sourcechannel><channellabel>left</channellabel></audiochannel></audio>
+      <audio><channelcount>1</channelcount><layout>stereo</layout><audiochannel><sourcechannel>2</sourcechannel><channellabel>right</channellabel></audiochannel></audio></media></file>
+    {links}</clipitem></track></video>
+  <audio>{}{}</audio></media>
+</sequence></xmeml>"#,
+        half("clipitem-10", 1),
+        half("clipitem-11", 2)
+    );
+    let (imp, _) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    let si = only_seq(&imp);
+    let q = imp.project.sequence(si).unwrap();
+    let items: Vec<_> = q.audio_tracks.iter().flat_map(|t| &t.items).collect();
+    assert_eq!(items.len(), 1, "{:?}", q.audio_tracks.iter().map(|t| t.items.len()).collect::<Vec<_>>());
+    assert!(items[0].source_channels.is_empty());
+    assert_eq!(balances(&imp), vec![0.0]);
+    assert_eq!(items[0].link, q.video_tracks[0].items[0].link);
+    assert!(items[0].link.is_some());
+}
+
+/// A level ramp on a balanced stereo clip: the halves carry ramps a constant offset apart, and
+/// read back as one clip with the ramp and the Balance.
+#[test]
+fn stereo_level_ramp_with_balance_round_trips() {
+    let (mut p, s) = stereo_project(0.0, -50.0);
+    {
+        let r = FrameRate::FPS_24;
+        let it = p.sequence_mut(s).unwrap().audio_tracks[0].items.get_mut(0).unwrap();
+        let mut lv = Param::new(ParamValue::Float(0.0));
+        lv.keyframes.push(Keyframe::new(r.tick_of(0), ParamValue::Float(-24.0)));
+        lv.keyframes.push(Keyframe::new(r.tick_of(71), ParamValue::Float(0.0)));
+        it.effect_mut("volume").unwrap().params.insert("level".into(), lv);
+    }
+    let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    let si = only_seq(&imp);
+    let q = imp.project.sequence(si).unwrap();
+    assert_eq!(q.audio_tracks.len(), 4, "{xml}");
+    assert_eq!(structure(&imp.project, si, TrackKind::Audio), structure(&p, s, TrackKind::Audio), "{xml}");
+    let it = &q.audio_tracks[0].items[0];
+    let balance = it.effect("panner").and_then(|e| e.param("balance")).and_then(|p| p.value.as_f64()).unwrap();
+    assert!((balance + 50.0).abs() < 1e-3, "{balance}");
+    let lv = it.effect("volume").unwrap().param("level").unwrap();
+    let values: Vec<f64> = lv.keyframes.iter().map(|k| k.value.as_f64().unwrap()).collect();
+    assert!(values.len() == 2 && (values[0] + 24.0).abs() < 1e-4 && values[1].abs() < 1e-4, "{values:?}");
+}
+
+/// A crossfade from a stereo clip into a mono one: the right track holds only the stereo clip's
+/// right half, so its side of the crossfade is a fade to nothing up to the cut, not a hard cut.
+#[test]
+fn stereo_to_mono_crossfade_fades_the_right_half() {
+    let r = FrameRate::FPS_24;
+    let mut p = Project::new("P");
+    let a = media(&mut p, "/m/a.mov", true, true, r);
+    let m = media(&mut p, "/m/mono.wav", false, true, r);
+    if let Some(ItemKind::Media(mc)) = p.item_mut(m).map(|i| &mut i.kind) {
+        mc.info.audio_streams[0].channels = 1;
+    }
+    let s = sequence(&mut p, "S", r, false);
+    let left = clip(&mut p, s, TrackKind::Audio, 0, a, 0, 36, 0);
+    let right = clip(&mut p, s, TrackKind::Audio, 0, m, 36, 36, 12);
+    transition(&mut p, s, TrackKind::Audio, 0, "constant_power", Some(left), Some(right), 30, 12, TransitionAlign::CenterAtCut);
+    let (_, rep) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    assert!(rep.has_warnings(), "{rep}");
+    let (imp, xml, _) = roundtrip(&p, s, Format::Fcp7Xml, &ExportOptions::default());
+    let transitions: Vec<&str> = xml.split("<transitionitem>").skip(1).collect();
+    assert_eq!(transitions.len(), 2, "{xml}");
+    assert!(transitions[0].contains("<start>30</start>") && transitions[0].contains("<alignment>center</alignment>"), "{xml}");
+    assert!(transitions[1].contains("<start>30</start>") && transitions[1].contains("<end>36</end>"), "{xml}");
+    assert!(transitions[1].contains("<alignment>end-black</alignment>"), "{xml}");
+    let si = only_seq(&imp);
+    assert_eq!(structure(&imp.project, si, TrackKind::Audio), structure(&p, s, TrackKind::Audio), "{xml}");
+}
+
+/// Halves that do not match (different levels with a ramp on one) stay two clips.
+#[test]
+fn unmatched_stereo_halves_stay_split() {
+    let (p, s) = stereo_project(0.0, 0.0);
+    let (bytes, _) = export(&p, s, Format::Fcp7Xml, &ExportOptions::default()).unwrap();
+    let xml = String::from_utf8(bytes).unwrap();
+    // Give the right half a level ramp of its own.
+    let end = xml.rfind("</sourcetrack>").unwrap() + "</sourcetrack>".len();
+    let ramp = r#"<filter><effect><name>Audio Levels</name><effectid>audiolevels</effectid><effecttype>audiolevels</effecttype><mediatype>audio</mediatype><parameter><parameterid>level</parameterid><name>Level</name><value>1</value><keyframe><when>0</when><value>1</value></keyframe><keyframe><when>10</when><value>0.5</value></keyframe></parameter></effect></filter>"#;
+    let doc = format!("{}{ramp}{}", &xml[..end], &xml[end..]);
+    let (imp, _) = import(doc.as_bytes(), Format::Fcp7Xml, None).unwrap();
+    assert_eq!(balances(&imp), vec![-100.0, 100.0]);
+}

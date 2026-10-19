@@ -1,6 +1,6 @@
 # Where FilmCraft falls short of Premiere Pro
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-16 · **Change:** minor (G1: Premiere side scripted, first real numbers: 11 / 20 pass; findings filed) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (G1: FCP7 XML writes stereo clips as Premiere's two linked halves) · **Target:** Adobe Premiere Pro 2026 (26.5.2)
 
 Every known shortfall, one entry each, ranked by what most stops an editor using FilmCraft for real
 work. This is the work list: agents should prefer it over adding checklist items. Numbers are in
@@ -14,7 +14,7 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 
 | # | Gap | Kind | Blocks beta | Estimate |
 |---|---|---|---|---|
-| G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 20–40 h (harness and first scripted run done; the interchange and render fixes behind the nine known failures, and corpus breadth, remain) |
+| G1 | Nothing compares our output with Premiere's | measurement | no, but every ready number depends on it | 20–40 h (harness and first scripted run done; the interchange and render fixes behind the remaining known failures, and corpus breadth, remain) |
 | G2 | Premiere's `.prproj` cannot be opened | file format | **yes** | 60–120 h |
 | G3 | 10-bit and 4:2:2 camera media needs hardware | codec | yes | 30–50 h |
 | G4 | Crashes at start-up, and no test CI on pull requests | stability | yes | 40–80 h |
@@ -54,14 +54,17 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
   line (kernel and curve differences). Cross Dissolve fails at 28.1 dB: Premiere blends in
   gamma-encoded space, our mid-dissolve is brighter. Dip to Black is not comparable yet: Premiere
   imports our `Dip to Black` transition as a Cross Dissolve (its own XML calls it `Dip to Color
-  Dissolve` with a `dipcolor`). Every audio case fails at 1–15 dB SNR because our FCP7 XML writes a
-  stereo clip as one clip item with source track 1, which Premiere plays as mono channel 1 centred
-  at −3 dB; Premiere writes a stereo clip as two linked clip items on audio tracks 1 and 2 with
-  `outputchannelindex`.
-- **Missing:** the interchange fixes the first run exposed (stereo clip items, `Dip to Color
+  Dissolve` with a `dipcolor`). Every audio case failed at 1–15 dB SNR because our FCP7 XML wrote a
+  stereo clip as one clip item with source track 1, which Premiere played as mono channel 1 centred
+  at −3 dB. The export now writes a stereo clip as Premiere does: two linked clip items (source
+  tracks 1 and 2, one channel group) on a pair of XML tracks (`outputchannelindex` 1 and 2), each
+  panned hard to its side, the clip's Balance carried as the halves' levels; the import reads the
+  pair back as one stereo clip.
+- **Missing:** the interchange fixes the first run exposed (`Dip to Color
   Dissolve`, Premiere's effect ids for Gaussian Blur / Brightness & Contrast / Black & White /
   Invert so the five effect cases need no hand step) and the render fixes for the dissolve curve,
-  the blur kernel and the Brightness & Contrast curves, each its own task: the nine failing
+  the blur kernel, the Brightness & Contrast curves, the Constant Power crossfade curve and the
+  Audio Levels keyframe interpolation (Premiere's is linear in gain^0.45), each its own task: the failing
   cases carry `known_failure` marks with these reasons until then; calibrated tolerances; the corpus covers 20 features, not every effect,
   transition, Lumetri control, blend mode and audio effect. Effects described as approximations
   still count the same as exact ones until they are in the corpus.
@@ -343,3 +346,4 @@ platforms** G4, G9, G17; **performance** G16; **ecosystem** G11; **measurement**
 | 2026-10-12 | minor | G10: OpenEXR PXR24 import |
 | 2026-10-15 | minor | G1: the fidelity harness exists (`crates/fidelity`, `cargo xtask fidelity`: original media corpus, 20 cases as FCP7 XML / OTIO, PSNR / ΔE₀₀ and aligned audio SNR scoring, `PREMIERE.md` protocol); remaining: the Premiere renders and corpus breadth, 25–50 h |
 | 2026-10-16 | minor | G1: first scripted Premiere run (Premiere Pro 26.5.2, bridge panel + `render.py`): 11 of 11 unmarked cases pass, 9 cases marked `known_failure` with filed reasons (stereo clip items, `Dip to Color Dissolve`, Premiere's effect ids, dissolve curve, blur kernel, Brightness & Contrast curves); remaining 20–40 h |
+| 2026-10-18 | minor | G1: FCP7 XML writes a stereo clip as two linked mono clip items (source tracks 1 / 2, output channels 1 / 2, one channel group, panned hard to their sides, Balance as their levels) and reads the pair back as one stereo clip; against Premiere's new renders (2026-10-19) the cut, gain and pan cases pass bit-exact (SNR ≥ 119 dB) and lose their `known_failure` marks; the crossfade and level-ramp cases stay marked for render curve fixes |

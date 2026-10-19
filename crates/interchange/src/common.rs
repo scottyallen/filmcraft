@@ -667,6 +667,21 @@ pub(crate) fn gain_to_db(g: f64) -> f64 {
     if g <= 1e-15 { -287.5 } else { 20.0 * g.log10() }
 }
 
+/// The (left, right) gains the clip Panner's Balance (−100 … 100) gives a stereo clip in our mixer
+/// (`filmcraft_render::audio::pan_gains`): the far side is attenuated, the near side stays at unity.
+pub(crate) fn balance_gains(balance: f64) -> (f64, f64) {
+    let a = ((balance / 100.0).clamp(-1.0, 1.0) + 1.0) * std::f64::consts::FRAC_PI_4;
+    ((a.cos() * std::f64::consts::SQRT_2).min(1.0), (a.sin() * std::f64::consts::SQRT_2).min(1.0))
+}
+
+/// The Balance that attenuates one side of a stereo clip by `gain` (0 … 1): the inverse of
+/// [`balance_gains`], toward the left when the right side is the quieter one.
+pub(crate) fn balance_for(gain: f64, right_quieter: bool) -> f64 {
+    let g = (gain.clamp(0.0, 1.0)) / std::f64::consts::SQRT_2;
+    let a = if right_quieter { g.asin() } else { g.acos() };
+    (a / std::f64::consts::FRAC_PI_4 - 1.0) * 100.0
+}
+
 /// Sanitise a name for fixed-width EDL fields.
 pub(crate) fn sanitize_reel(s: &str, max: usize) -> String {
     let r: String = s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c.to_ascii_uppercase() } else { '_' }).take(max).collect();
