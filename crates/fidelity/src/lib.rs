@@ -496,7 +496,7 @@ mod tests {
     fn harness_runs_and_scores_against_a_reference_directory() {
         let out = tmp("run");
         let settings = CorpusSettings { width: 160, height: 90, seconds: 1, ..Default::default() };
-        let opts = Options { out_dir: out.clone(), reference_dir: None, only: vec!["cut".into(), "audio_gain_minus6".into()], settings };
+        let opts = Options { out_dir: out.clone(), reference_dir: None, only: vec!["cut".into(), "audio_level_ramp".into()], settings };
         let o = run(&opts).unwrap();
         assert_eq!(o.results.len(), 2);
         assert!(o.results.iter().all(|r| r.verdict == Verdict::NoReference && r.video.is_none() && r.audio.is_none()));
@@ -517,12 +517,12 @@ mod tests {
         assert!(premiere.contains("#### `cut`: Hard cut") && premiere.contains("160×90, 24 fps, 48000 Hz"), "{premiere}");
         let stills = std::fs::read_dir(out.join("ours/cut")).unwrap().count();
         assert_eq!(stills, 24, "one PNG per frame");
-        assert!(out.join("ours/audio_gain_minus6/audio_gain_minus6.wav").is_file());
+        assert!(out.join("ours/audio_level_ramp/audio_level_ramp.wav").is_file());
 
         // our own render as the reference: everything identical
         let reference = tmp("ref");
         copy_dir(&out.join("ours/cut"), &reference.join("cut"));
-        copy_dir(&out.join("ours/audio_gain_minus6"), &reference.join("audio_gain_minus6"));
+        copy_dir(&out.join("ours/audio_level_ramp"), &reference.join("audio_level_ramp"));
         let with_ref = Options { reference_dir: Some(reference.clone()), ..opts.clone() };
         let o = run(&with_ref).unwrap();
         assert!(o.results.iter().all(|r| r.verdict == Verdict::Pass), "{:?}", o.results.iter().map(|r| &r.verdict).collect::<Vec<_>>());
@@ -535,7 +535,7 @@ mod tests {
         let report = std::fs::read_to_string(&o.report).unwrap();
         assert!(report.contains("| 24 / 24 frames | ∞ | 0.000 | 0.00 | 0 | – | – | **pass** |"), "{report}");
         assert!(report.contains("| 48000 / 48000 samples | – | – | – | 0.00000 | ∞ | 0 | **pass** (marked known) |"), "{report}");
-        assert!(report.contains("## Passing though marked known (1)") && report.contains("- `audio_gain_minus6`: remove its `known_failure`"), "{report}");
+        assert!(report.contains("## Passing though marked known (1)") && report.contains("- `audio_level_ramp`: remove its `known_failure`"), "{report}");
 
         // a perturbed reference: frame 3 redder, the sound at half level
         let frame = reference.join("cut/cut003.png");
@@ -546,8 +546,8 @@ mod tests {
             px[0] = px[0].saturating_add(40);
         }
         std::fs::write(&frame, filmcraft_export::encode_png(f.rgba.clone(), f.w, f.h).unwrap()).unwrap();
-        let wav = reference.join("audio_gain_minus6/audio_gain_minus6.wav");
-        let found = reference::locate(&reference.join("audio_gain_minus6")).unwrap().unwrap();
+        let wav = reference.join("audio_level_ramp/audio_level_ramp.wav");
+        let found = reference::locate(&reference.join("audio_level_ramp")).unwrap().unwrap();
         let audio = reference::read_audio(&found, 48_000, 48_000).unwrap();
         let interleaved: Vec<f32> = (0..audio[0].len()).flat_map(|i| [audio[0][i] * 0.5, audio[1][i] * 0.5]).collect();
         std::fs::write(&wav, filmcraft_export::write_wav(&interleaved, 2, 48_000, SampleFormat::Float32).unwrap()).unwrap();
@@ -566,7 +566,7 @@ mod tests {
         assert!(o.summary().starts_with("fidelity: 0/1 cases pass (0.0%), 1 known failure, 0 without"), "{}", o.summary());
         let report = std::fs::read_to_string(&o.report).unwrap();
         assert!(report.contains("## Failing (1)") && report.contains("- worst frame 3: PSNR"), "{report}");
-        assert!(report.contains("## Known failures (1)") && report.contains("| **known** |") && report.contains("stereo clip"), "{report}");
+        assert!(report.contains("## Known failures (1)") && report.contains("| **known** |") && report.contains("gain^0.45"), "{report}");
 
         // a reference that cannot be read fails its own case, named, and the run still completes
         std::fs::write(&frame, b"not a png").unwrap();
