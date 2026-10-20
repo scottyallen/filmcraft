@@ -84,9 +84,9 @@ was 0 with every frame decoded in software).
    do not go through a GOP cache. Stills now share one `media::FrameCache` under
    `still::STILL_BUDGET` (1 GiB, the same as the video frame budget; float stills are 16 bytes a
    pixel, and this holds a logo over a 61 MP raw or a dissolve between two 24 MP raws without
-   decoding either again every frame); a source keeps its reader, not its picture, and decodes the
-   file again when it is shown after being evicted (least recently shown first). A source's
-   picture leaves the cache with the source. The cache never evicts the picture it just added,
+   decoding either again every frame); a source keeps its reader (or the file's bytes when the host
+   gives no reader), not its picture, and decodes the file again when it is shown after being
+   evicted (least recently shown first). A source's picture leaves the cache with the source. The cache never evicts the picture it just added,
    so one still larger than the budget plays from the cache on its own and is pushed out only by
    the next still. Two stills that together exceed the budget on one frame (two 45 MP raws, 720 MB
    each as float) still decode again every frame, bounded. Measured on 60 × 12 MP JPEGs in the thumbnail view:
